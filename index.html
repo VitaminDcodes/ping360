@@ -1,0 +1,689 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Sonar Mapping Engine - Light Theme</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body, html {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #f7f9fa;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            color: #1a202c;
+        }
+
+        #canvas-container {
+            width: 100%;
+            height: 100%;
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 1;
+        }
+
+        /* Top control bar: clean light theme */
+        #top-bar {
+            position: absolute;
+            top: 15px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            background: rgba(255, 255, 255, 0.93);
+            border: 1px solid #cbd5e0;
+            border-radius: 6px;
+            padding: 8px 16px;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            font-size: 0.82rem;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.08);
+            width: max-content;
+            max-width: 95%;
+            flex-wrap: wrap;
+        }
+
+        .bar-group {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            border-right: 1px solid #e2e8f0;
+            padding-right: 12px;
+        }
+
+        .bar-group:last-child {
+            border-right: none;
+            padding-right: 0;
+        }
+
+        .bar-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .bar-label {
+            color: #4a5568;
+            font-weight: 600;
+        }
+
+        /* Status indicator with glowing light */
+        .status-badge {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            font-size: 0.78rem;
+            font-weight: 600;
+            background: #edf2f7;
+            padding: 3px 8px;
+            border-radius: 4px;
+            border: 1px solid #e2e8f0;
+        }
+
+        .status-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background-color: #e53e3e;
+            box-shadow: 0 0 4px #e53e3e;
+            transition: all 0.2s ease;
+        }
+
+        .status-dot.connected {
+            background-color: #38a169;
+            box-shadow: 0 0 5px #38a169;
+        }
+
+        input[type="range"] {
+            -webkit-appearance: none;
+            width: 75px;
+            height: 4px;
+            background: #cbd5e0;
+            border-radius: 2px;
+            outline: none;
+        }
+
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #4a5568;
+            cursor: pointer;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+        }
+
+        .btn {
+            background: #ffffff;
+            border: 1px solid #cbd5e0;
+            color: #2d3748;
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 0.78rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        }
+
+        .btn:hover {
+            background: #edf2f7;
+            border-color: #a0aec0;
+        }
+
+        .btn.danger {
+            color: #c53030;
+            border-color: #feb2b2;
+            background: #fff5f5;
+        }
+
+        .btn.danger:hover {
+            background: #fed7d7;
+            border-color: #fc8181;
+        }
+
+        /* Bottom helper text */
+        #bottom-info {
+            position: absolute;
+            bottom: 15px;
+            left: 15px;
+            z-index: 10;
+            font-size: 0.75rem;
+            color: #718096;
+            pointer-events: none;
+            background: rgba(255,255,255,0.7);
+            padding: 2px 6px;
+            border-radius: 3px;
+        }
+
+        /* Custom Checkbox Toggle */
+        .toggle-container {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            cursor: pointer;
+            user-select: none;
+            font-size: 0.78rem;
+            font-weight: 500;
+        }
+
+        .toggle-container input {
+            cursor: pointer;
+        }
+
+        /* Highlight box for test controls */
+        .test-box {
+            background: #fffaf0;
+            border: 1px dashed #dd6b20 !important;
+            padding: 4px 10px;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+
+    <div id="top-bar">
+        <!-- Status Badges -->
+        <div class="bar-group">
+            <span class="bar-label">LINK:</span>
+            <div class="status-badge" title="Websocket Connection to Python Server">
+                <div id="status-dot" class="status-dot"></div>
+                <span id="status-text">OFFLINE</span>
+            </div>
+        </div>
+
+        <div class="bar-group">
+            <span class="bar-label">SYS:</span>
+            <div class="status-badge" title="Ping360 Sonar">
+                <div id="sonar-dot" class="status-dot"></div>
+                <span>SONAR</span>
+            </div>
+            <div class="status-badge" title="Mavlink Attitude (192.168.2.2)">
+                <div id="imu-dot" class="status-dot"></div>
+                <span>IMU</span>
+            </div>
+            <div class="status-badge" title="TCP DVL Velocity (192.168.2.3)">
+                <div id="dvl-dot" class="status-dot"></div>
+                <span>DVL</span>
+            </div>
+        </div>
+
+        <!-- Controls -->
+        <div class="bar-group">
+            <div class="bar-item">
+                <span class="bar-label">Threshold:</span>
+                <input type="range" id="threshold-slider" min="10" max="230" value="110">
+                <span id="threshold-val" style="font-family: monospace;">110</span>
+            </div>
+            <div class="bar-item">
+                <span class="bar-label">Speed:</span>
+                <input type="range" id="speed-slider" min="0.0" max="1.0" step="0.02" value="0.20">
+                <span id="speed-val" style="font-family: monospace;">0.20</span>
+            </div>
+        </div>
+
+        <div class="bar-group">
+            <label class="toggle-container">
+                <input type="checkbox" id="grid-toggle" checked>
+                <span>Show Grid</span>
+            </label>
+        </div>
+
+        <div class="bar-group">
+            <span class="bar-label">PTS:</span>
+            <span id="points-count" style="font-family: monospace; font-size: 0.78rem; font-weight: bold; color: #4a5568;">0</span>
+        </div>
+
+        <!-- False Cases Test Box -->
+        <div class="bar-group test-box">
+            <span class="bar-label" style="color: #dd6b20;">TEST:</span>
+            <label class="toggle-container" title="Disconnect IMU stream">
+                <input type="checkbox" id="test-imu-fail">
+                <span style="color: #dd6b20;">Fail IMU</span>
+            </label>
+            <label class="toggle-container" title="Disconnect DVL stream">
+                <input type="checkbox" id="test-dvl-fail">
+                <span style="color: #dd6b20;">Fail DVL</span>
+            </label>
+            <label class="toggle-container" title="Inject incremental drift bias">
+                <input type="checkbox" id="test-inject-drift">
+                <span style="color: #dd6b20;">Inject Drift</span>
+            </label>
+        </div>
+
+        <div class="bar-group">
+            <button id="clear-btn" class="btn danger">Clear Map</button>
+            <button id="reset-view-btn" class="btn">Reset View</button>
+        </div>
+    </div>
+
+    <div id="bottom-info">
+        Left-Click + Drag: Rotate | Right-Click + Drag: Pan | Scroll: Zoom
+    </div>
+
+    <!-- Load CDN Scripts -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script>
+        // DOM Elements
+        const thresholdSlider = document.getElementById('threshold-slider');
+        const thresholdVal = document.getElementById('threshold-val');
+        const speedSlider = document.getElementById('speed-slider');
+        const speedVal = document.getElementById('speed-val');
+        const gridToggle = document.getElementById('grid-toggle');
+        const pointsCount = document.getElementById('points-count');
+        const clearBtn = document.getElementById('clear-btn');
+        const resetViewBtn = document.getElementById('reset-view-btn');
+        
+        // Status dots
+        const statusDot = document.getElementById('status-dot');
+        const statusText = document.getElementById('status-text');
+        const sonarDot = document.getElementById('sonar-dot');
+        const imuDot = document.getElementById('imu-dot');
+        const dvlDot = document.getElementById('dvl-dot');
+        
+        // Test Checkboxes
+        const testImuFail = document.getElementById('test-imu-fail');
+        const testDvlFail = document.getElementById('test-dvl-fail');
+        const testInjectDrift = document.getElementById('test-inject-drift');
+
+        // Three.js Setup
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+
+        // Standard clean light theme background
+        scene.background = new THREE.Color(0xf7f9fa);
+
+        const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(-15, 6, 10);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.shadowMap.enabled = true;
+        container.appendChild(renderer.domElement);
+
+        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.05;
+
+        // Lights
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambientLight);
+
+        const dirLight = new THREE.DirectionalLight(0xffffff, 0.7);
+        dirLight.position.set(10, 20, 10);
+        scene.add(dirLight);
+
+        // Simple light-grey floor grid (visible by default)
+        const gridHelper = new THREE.GridHelper(100, 50, 0xcbd5e0, 0xe2e8f0);
+        gridHelper.position.y = -2.5;
+        gridHelper.visible = true;
+        scene.add(gridHelper);
+
+        // Distinct Box-Frame ROV Model (BlueROV2 style, bright orange and black side frames)
+        const rovGroup = new THREE.Group();
+        
+        // 1. Bright Orange Buoyancy Block (Top box)
+        const topGeo = new THREE.BoxGeometry(0.8, 0.2, 0.5);
+        const topMat = new THREE.MeshStandardMaterial({ color: 0xffa500, roughness: 0.3 }); // Bright Orange
+        const topMesh = new THREE.Mesh(topGeo, topMat);
+        topMesh.position.set(0, 0.15, 0);
+        rovGroup.add(topMesh);
+        
+        // 2. Black Side Panels (Side plates)
+        const sideGeo = new THREE.BoxGeometry(0.9, 0.45, 0.02);
+        const sideMat = new THREE.MeshStandardMaterial({ color: 0x1a202c, roughness: 0.7 });
+        
+        const leftPlate = new THREE.Mesh(sideGeo, sideMat);
+        leftPlate.position.set(0, 0, 0.25);
+        const rightPlate = new THREE.Mesh(sideGeo, sideMat);
+        rightPlate.position.set(0, 0, -0.25);
+        
+        rovGroup.add(leftPlate);
+        rovGroup.add(rightPlate);
+        
+        // 3. Central Enclosure (Acrylic cylinder)
+        const cylGeo = new THREE.CylinderGeometry(0.15, 0.15, 0.6, 16);
+        cylGeo.rotateZ(Math.PI / 2);
+        const cylMat = new THREE.MeshStandardMaterial({ color: 0xe2e8f0, metalness: 0.1, roughness: 0.1, transparent: true, opacity: 0.7 });
+        const cylMesh = new THREE.Mesh(cylGeo, cylMat);
+        cylMesh.position.set(0, -0.05, 0);
+        rovGroup.add(cylMesh);
+        
+        // 4. Thrusters (4 corners)
+        const thrusterGeo = new THREE.CylinderGeometry(0.05, 0.05, 0.12, 12);
+        thrusterGeo.rotateZ(Math.PI / 2);
+        const thrusterMat = new THREE.MeshStandardMaterial({ color: 0x4a5568 });
+        
+        const tPositions = [
+            [0.3, -0.12, 0.2],
+            [0.3, -0.12, -0.2],
+            [-0.3, -0.12, 0.2],
+            [-0.3, -0.12, -0.2]
+        ];
+        tPositions.forEach(pos => {
+            const tMesh = new THREE.Mesh(thrusterGeo, thrusterMat);
+            tMesh.position.set(pos[0], pos[1], pos[2]);
+            rovGroup.add(tMesh);
+        });
+
+        // 5. Sonar Head on the back
+        const sonarGeo = new THREE.CylinderGeometry(0.06, 0.06, 0.1, 12);
+        sonarGeo.rotateX(Math.PI / 2);
+        const sonarMat = new THREE.MeshStandardMaterial({ color: 0x2d3748, metalness: 0.8 });
+        const sonarMesh = new THREE.Mesh(sonarGeo, sonarMat);
+        sonarMesh.position.set(-0.46, 0, 0);
+        rovGroup.add(sonarMesh);
+        
+        scene.add(rovGroup);
+
+        // Point Cloud Buffer
+        const maxPoints = 120000;
+        const positions = new Float32Array(maxPoints * 3);
+        const colors = new Float32Array(maxPoints * 3);
+        
+        // Initialize off-screen
+        for(let i = 0; i < maxPoints; i++) {
+            positions[i*3] = 0;
+            positions[i*3+1] = -9999;
+            positions[i*3+2] = 0;
+            colors[i*3] = 0.97;
+            colors[i*3+1] = 0.97;
+            colors[i*3+2] = 0.97;
+        }
+
+        const pointCloudGeo = new THREE.BufferGeometry();
+        pointCloudGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        pointCloudGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+        // Rounded, opaque points for high contrast on light background
+        const pointCloudMat = new THREE.PointsMaterial({
+            size: 4.0,
+            vertexColors: true,
+            sizeAttenuation: false
+        });
+
+        const pointCloud = new THREE.Points(pointCloudGeo, pointCloudMat);
+        pointCloud.frustumCulled = false;
+        scene.add(pointCloud);
+
+        let pointWriteIdx = 0;
+        let totalActivePoints = 0;
+
+        // Custom High-Contrast colormap (Jet optimized for white background)
+        // Red (Min X) -> Orange -> Forest Green -> Cyan -> Royal Blue (Max X)
+        function getHighContrastJetColor(u) {
+            u = Math.max(0, Math.min(1, u));
+            let r = 0, g = 0, b = 0;
+            if (u < 0.25) {
+                // Red to Gold/Orange
+                r = 0.85;
+                g = (u / 0.25) * 0.55;
+                b = 0.0;
+            } else if (u < 0.50) {
+                // Orange to Green
+                r = 0.85 - ((u - 0.25) / 0.25) * 0.85;
+                g = 0.55 + ((u - 0.25) / 0.25) * 0.15;
+                b = 0.0;
+            } else if (u < 0.75) {
+                // Green to Cyan
+                r = 0.0;
+                g = 0.70;
+                b = ((u - 0.50) / 0.25) * 0.70;
+            } else {
+                // Cyan to Dark Blue
+                r = 0.0;
+                g = 0.70 - ((u - 0.75) / 0.25) * 0.65;
+                b = 0.70 + ((u - 0.75) / 0.25) * 0.20;
+            }
+            return { r, g, b };
+        }
+
+        // Bounding box color updates
+        function updatePointColors() {
+            if (totalActivePoints === 0) return;
+            
+            const posAttr = pointCloudGeo.getAttribute('position');
+            const colAttr = pointCloudGeo.getAttribute('color');
+            const posArr = posAttr.array;
+            const colArr = colAttr.array;
+
+            let minX = Infinity;
+            let maxX = -Infinity;
+
+            for (let i = 0; i < totalActivePoints; i++) {
+                const x = posArr[i * 3];
+                if (posArr[i * 3 + 1] < -9000) continue;
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+            }
+
+            let range = maxX - minX;
+            if (range < 0.1) range = 1.0;
+
+            for (let i = 0; i < totalActivePoints; i++) {
+                if (posArr[i * 3 + 1] < -9000) continue;
+                const x = posArr[i * 3];
+                const u = (x - minX) / range;
+                const c = getHighContrastJetColor(u);
+                
+                colArr[i * 3] = c.r;
+                colArr[i * 3 + 1] = c.g;
+                colArr[i * 3 + 2] = c.b;
+            }
+
+            colAttr.needsUpdate = true;
+        }
+
+        // Camera Tracking in full 3D (X, Y elevation, Z lateral)
+        let lastRobotX = 0;
+        let lastRobotY_Three = 0;
+        let lastRobotZ_Three = 0;
+        let cameraFollow = true;
+
+        // WebSocket Connection
+        let ws;
+        function connectWS() {
+            statusText.innerText = "CONNECTING";
+            statusDot.className = "status-dot";
+            
+            ws = new WebSocket('ws://localhost:8001');
+            
+            ws.onopen = () => {
+                console.log('WebSocket Connected');
+                statusText.innerText = "ONLINE";
+                statusDot.className = "status-dot connected";
+                syncSettings();
+            };
+            
+            ws.onmessage = (event) => {
+                const msg = JSON.parse(event.data);
+                
+                if (msg.type === "telemetry") {
+                    // Update connection status indicators
+                    sonarDot.className = msg.sonar_connected ? "status-dot connected" : "status-dot";
+                    imuDot.className = msg.imu_connected ? "status-dot connected" : "status-dot";
+                    dvlDot.className = msg.dvl_connected ? "status-dot connected" : "status-dot";
+                    
+                    // Update robot indicator mesh pose
+                    // Coordinate mapping:
+                    // Three.js X = Robot X (forward)
+                    // Three.js Y = Robot Z (up/down)
+                    // Three.js Z = Robot Y (left/right)
+                    const pos = msg.robot_pose;
+                    rovGroup.position.set(pos.x, pos.z, pos.y);
+                    
+                    // Attitude rotations
+                    rovGroup.rotation.set(pos.roll, pos.yaw, pos.pitch);
+                    
+                    // Camera track in full 3D
+                    if (cameraFollow) {
+                        const deltaX = pos.x - lastRobotX;
+                        const deltaY = pos.z - lastRobotY_Three; // pos.z maps to Three.js Y
+                        const deltaZ = pos.y - lastRobotZ_Three; // pos.y maps to Three.js Z
+                        
+                        camera.position.x += deltaX;
+                        camera.position.y += deltaY;
+                        camera.position.z += deltaZ;
+                        
+                        controls.target.set(pos.x, pos.z, pos.y);
+                    }
+                    lastRobotX = pos.x;
+                    lastRobotY_Three = pos.z;
+                    lastRobotZ_Three = pos.y;
+                    
+                    // Throttled telemetry debug log
+                    if (msg.scan_angle % 80 === 0) {
+                        console.log(`[Telemetry] Robot Pose -> X: ${pos.x.toFixed(2)}, Y: ${pos.y.toFixed(2)}, Z: ${pos.z.toFixed(2)} (Heading: ${msg.scan_angle}g)`);
+                    }
+                    
+                } else if (msg.type === "points") {
+                    const newPts = msg.points;
+                    if (newPts.length > 0) {
+                        const posAttr = pointCloudGeo.getAttribute('position');
+                        const posArr = posAttr.array;
+                        
+                        for (let pt of newPts) {
+                            const index = pointWriteIdx * 3;
+                            // Coordinate mapping:
+                            // x -> Three.js X (forward)
+                            // z -> Three.js Y (vertical height)
+                            // y -> Three.js Z (horizontal depth)
+                            posArr[index] = pt.x;
+                            posArr[index+1] = pt.z;
+                            posArr[index+2] = pt.y;
+                            
+                            pointWriteIdx = (pointWriteIdx + 1) % maxPoints;
+                            totalActivePoints = Math.min(maxPoints, totalActivePoints + 1);
+                        }
+                        
+                        posAttr.needsUpdate = true;
+                        
+                        // Recalculate colors based on coordinate bounding box
+                        updatePointColors();
+                        
+                        // Update UI Counter
+                        const lastPt = newPts[newPts.length - 1];
+                        pointsCount.innerText = `${totalActivePoints} (Last: ${lastPt.x.toFixed(1)}, ${lastPt.z.toFixed(1)}, ${lastPt.y.toFixed(1)})`;
+                        
+                        // Debug log
+                        if (pointWriteIdx % 100 < newPts.length) {
+                            console.log(`[Points] Added ${newPts.length} points. Total active: ${totalActivePoints}`);
+                        }
+                    }
+                }
+            };
+            
+            ws.onclose = () => {
+                statusText.innerText = "OFFLINE";
+                statusDot.className = "status-dot";
+                sonarDot.className = "status-dot";
+                imuDot.className = "status-dot";
+                dvlDot.className = "status-dot";
+                setTimeout(connectWS, 3000);
+            };
+            
+            ws.onerror = (err) => {
+                ws.close();
+            };
+        }
+
+        connectWS();
+
+        // Control Deck Handlers
+        function syncSettings() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    action: "update_settings",
+                    intensity_threshold: parseInt(thresholdSlider.value),
+                    speed: parseFloat(speedSlider.value),
+                    test_imu_fail: testImuFail.checked,
+                    test_dvl_fail: testDvlFail.checked,
+                    test_inject_drift: testInjectDrift.checked
+                }));
+            }
+        }
+
+        thresholdSlider.addEventListener('input', () => {
+            thresholdVal.innerText = thresholdSlider.value;
+            syncSettings();
+        });
+
+        speedSlider.addEventListener('input', () => {
+            speedVal.innerText = speedSlider.value;
+            syncSettings();
+        });
+
+        [gridToggle, testImuFail, testDvlFail, testInjectDrift].forEach(el => {
+            el.addEventListener('change', () => {
+                if (el === gridToggle) {
+                    gridHelper.visible = gridToggle.checked;
+                } else {
+                    syncSettings();
+                }
+            });
+        });
+
+        clearBtn.addEventListener('click', () => {
+            const posAttr = pointCloudGeo.getAttribute('position');
+            const colAttr = pointCloudGeo.getAttribute('color');
+            const posArr = posAttr.array;
+            const colArr = colAttr.array;
+            
+            for(let i = 0; i < maxPoints; i++) {
+                posArr[i*3] = 0;
+                posArr[i*3+1] = -9999;
+                posArr[i*3+2] = 0;
+                colArr[i*3] = 0.97;
+                colArr[i*3+1] = 0.97;
+                colArr[i*3+2] = 0.97;
+            }
+            posAttr.needsUpdate = true;
+            colAttr.needsUpdate = true;
+            
+            pointWriteIdx = 0;
+            totalActivePoints = 0;
+            lastRobotX = 0;
+            lastRobotY_Three = 0;
+            lastRobotZ_Three = 0;
+            
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({action: "clear"}));
+            }
+        });
+
+        resetViewBtn.addEventListener('click', () => {
+            cameraFollow = true;
+            camera.position.set(lastRobotX - 15, lastRobotY_Three + 6, lastRobotZ_Three + 10);
+            controls.target.set(lastRobotX, lastRobotY_Three, lastRobotZ_Three);
+        });
+
+        controls.addEventListener('start', () => {
+            cameraFollow = false;
+        });
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // Loop
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            renderer.render(scene, camera);
+        }
+        
+        animate();
+    </script>
+</body>
+</html>

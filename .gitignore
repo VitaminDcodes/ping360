@@ -1,0 +1,42 @@
+# Python virtual environment
+venv/
+
+# Python compiler cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# PingViewer C++ Release build binaries and libraries
+# We ignore these because they are compiled release files, not source code
+*.dll
+*.exe
+*.icns
+*.ico
+Qt/
+QtCharts/
+QtGraphicalEffects/
+QtMultimedia/
+QtQml/
+QtQuick/
+QtQuick.2/
+audio/
+bearer/
+iconengines/
+imageformats/
+mediaservice/
+platforms/
+playlistformats/
+qmltooling/
+scenegraph/
+styles/
+translations/
+pingviewer.desktop
+pingviewer.rc
+pingviewer.rc.in
+
+# Local IDE and OS configuration files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
