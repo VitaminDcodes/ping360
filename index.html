@@ -270,10 +270,20 @@
         </div>
 
         <div class="bar-group">
+            <span class="bar-label">Mode:</span>
+            <select id="model-mode-select" class="btn" style="padding: 2px 6px; font-weight: bold; background: #ebf8ff; border-color: #bee3f8; color: #2b6cb0;">
+                <option value="points" selected>Point Cloud</option>
+                <option value="mesh">Surface Mesh (Triangles)</option>
+                <option value="solid">Solid Model</option>
+            </select>
+        </div>
+
+        <div class="bar-group">
             <button id="clear-btn" class="btn danger">Clear Map</button>
             <button id="reset-view-btn" class="btn">Reset View</button>
             <button id="export-csv-btn" class="btn primary">Export CSV</button>
-            <button id="export-ply-btn" class="btn primary">Export PLY</button>
+            <button id="export-ply-pts-btn" class="btn primary">Export PLY Points</button>
+            <button id="export-ply-mesh-btn" class="btn primary">Export PLY Mesh</button>
         </div>
     </div>
 
@@ -295,7 +305,9 @@
         const clearBtn = document.getElementById('clear-btn');
         const resetViewBtn = document.getElementById('reset-view-btn');
         const exportCsvBtn = document.getElementById('export-csv-btn');
-        const exportPlyBtn = document.getElementById('export-ply-btn');
+        const exportPlyPtsBtn = document.getElementById('export-ply-pts-btn');
+        const exportPlyMeshBtn = document.getElementById('export-ply-mesh-btn');
+        const modelModeSelect = document.getElementById('model-mode-select');
         
         // Status dots
         const statusDot = document.getElementById('status-dot');
@@ -432,6 +444,32 @@
 
         let pointWriteIdx = 0;
         let totalActivePoints = 0;
+        const pointMetadata = new Array(maxPoints);
+        let currentSweep = 0;
+        let lastAngle = -1;
+
+        // --- 3D Mesh Reconstruction objects ---
+        const meshGeometry = new THREE.BufferGeometry();
+        const meshMaterial = new THREE.MeshStandardMaterial({
+            vertexColors: true,
+            roughness: 0.6,
+            metalness: 0.1,
+            side: THREE.DoubleSide,
+            flatShading: true
+        });
+        const mesh = new THREE.Mesh(meshGeometry, meshMaterial);
+        mesh.visible = false; // Hidden by default (Point Cloud is default)
+        scene.add(mesh);
+
+        const wireframeMat = new THREE.LineBasicMaterial({
+            color: 0x1a202c,
+            transparent: true,
+            opacity: 0.35
+        });
+        let wireframe = null;
+
+        let lastMeshUpdateTime = 0;
+        let meshNeedsUpdate = false;
 
         // Custom High-Contrast colormap (Jet optimized for white background)
         // Red (Min X) -> Orange -> Forest Green -> Cyan -> Royal Blue (Max X)
@@ -563,6 +601,13 @@
                 } else if (msg.type === "points") {
                     const newPts = msg.points;
                     if (newPts.length > 0) {
+                        const firstPt = newPts[0];
+                        const angle = firstPt.angle;
+                        if (angle < lastAngle) {
+                            currentSweep++;
+                        }
+                        lastAngle = angle;
+
                         const posAttr = pointCloudGeo.getAttribute('position');
                         const posArr = posAttr.array;
                         
@@ -576,6 +621,14 @@
                             posArr[index+1] = pt.z;
                             posArr[index+2] = pt.y;
                             
+                            // Save metadata for exporting
+                            pointMetadata[pointWriteIdx] = {
+                                timestamp: pt.timestamp || new Date().toISOString(),
+                                intensity: pt.intensity,
+                                angle: pt.angle,
+                                sweep: currentSweep
+                            };
+                            
                             pointWriteIdx = (pointWriteIdx + 1) % maxPoints;
                             totalActivePoints = Math.min(maxPoints, totalActivePoints + 1);
                         }
@@ -584,6 +637,9 @@
                         
                         // Recalculate colors based on coordinate bounding box
                         updatePointColors();
+                        
+                        // Flag that the mesh geometry needs to be rebuilt
+                        meshNeedsUpdate = true;
                         
                         // Update UI Counter
                         const lastPt = newPts[newPts.length - 1];
@@ -669,6 +725,19 @@
             lastRobotX = 0;
             lastRobotY_Three = 0;
             lastRobotZ_Three = 0;
+            pointMetadata.fill(undefined);
+            currentSweep = 0;
+            lastAngle = -1;
+
+            // Clear reconstructed mesh
+            meshGeometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(0), 3));
+            meshGeometry.setAttribute('color', new THREE.BufferAttribute(new Float32Array(0), 3));
+            meshGeometry.setIndex([]);
+            if (wireframe) {
+                scene.remove(wireframe);
+                wireframe = null;
+            }
+            updateVisibility();
             
             if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({action: "clear"}));
@@ -681,7 +750,7 @@
             controls.target.set(lastRobotX, lastRobotY_Three, lastRobotZ_Three);
         });
 
-        // Export to CSV Format (X, Y, Z coordinate list)
+        // Export to CSV Format (X, Y, Z coordinate list with exact metadata)
         exportCsvBtn.addEventListener('click', () => {
             if (totalActivePoints === 0) {
                 alert("No points to export yet.");
@@ -689,15 +758,27 @@
             }
             const posAttr = pointCloudGeo.getAttribute('position');
             const posArr = posAttr.array;
-            let csvContent = "x,y,z\n";
+            
+            // Header row with self-describing column names
+            let csvContent = "Timestamp,X_Coordinate,Y_Coordinate,Z_Coordinate,Intensity,Angle_Gradian\n";
             let validPoints = 0;
-            for (let i = 0; i < totalActivePoints; i++) {
+
+            let startIdx = 0;
+            let count = totalActivePoints;
+            if (totalActivePoints === maxPoints) {
+                startIdx = pointWriteIdx;
+            }
+
+            for (let j = 0; j < count; j++) {
+                const i = (startIdx + j) % maxPoints;
                 const x = posArr[i * 3];
                 const z = posArr[i * 3 + 1]; // Three.js Y maps to Global Z (Elevation)
                 const y = posArr[i * 3 + 2]; // Three.js Z maps to Global Y (Starboard/Port)
                 if (z < -9000) continue;     // Filter out cleared/empty points
                 validPoints++;
-                csvContent += `${x.toFixed(4)},${y.toFixed(4)},${z.toFixed(4)}\n`;
+                
+                const meta = pointMetadata[i] || { timestamp: new Date().toISOString(), intensity: 0, angle: 0 };
+                csvContent += `${meta.timestamp},${x.toFixed(4)},${y.toFixed(4)},${z.toFixed(4)},${meta.intensity},${meta.angle}\n`;
             }
             if (validPoints === 0) {
                 alert("No active points to export.");
@@ -706,28 +787,52 @@
             const blob = new Blob([csvContent], { type: 'text/csv' });
             const link = document.createElement('a');
             link.href = URL.createObjectURL(blob);
-            link.download = `sonar_map_${Date.now()}.csv`;
+            
+            // Generate clean filename with timestamp
+            const now = new Date();
+            const timestampStr = now.getFullYear() + '-' +
+                String(now.getMonth() + 1).padStart(2, '0') + '-' +
+                String(now.getDate()).padStart(2, '0') + '_' +
+                String(now.getHours()).padStart(2, '0') + '-' +
+                String(now.getMinutes()).padStart(2, '0') + '-' +
+                String(now.getSeconds()).padStart(2, '0');
+            link.download = `sonar_map_${timestampStr}.csv`;
             link.click();
         });
 
-        // Export to PLY Format (Polygon / Point Cloud standard format)
-        exportPlyBtn.addEventListener('click', () => {
+        // Export to PLY Points (Point Cloud format)
+        exportPlyPtsBtn.addEventListener('click', () => {
             if (totalActivePoints === 0) {
                 alert("No points to export yet.");
                 return;
             }
             const posAttr = pointCloudGeo.getAttribute('position');
             const posArr = posAttr.array;
+            const colAttr = pointCloudGeo.getAttribute('color');
+            const colArr = colAttr.array;
             
             let validPoints = 0;
             let pointsData = "";
-            for (let i = 0; i < totalActivePoints; i++) {
+            
+            let startIdx = 0;
+            let count = totalActivePoints;
+            if (totalActivePoints === maxPoints) {
+                startIdx = pointWriteIdx;
+            }
+
+            for (let j = 0; j < count; j++) {
+                const i = (startIdx + j) % maxPoints;
                 const x = posArr[i * 3];
                 const z = posArr[i * 3 + 1]; // Three.js Y maps to Global Z (Elevation)
                 const y = posArr[i * 3 + 2]; // Three.js Z maps to Global Y (Starboard/Port)
                 if (z < -9000) continue;     // Filter out cleared/empty points
                 validPoints++;
-                pointsData += `${x.toFixed(4)} ${y.toFixed(4)} ${z.toFixed(4)}\n`;
+                
+                const r = Math.round(colArr[i * 3] * 255);
+                const g = Math.round(colArr[i * 3 + 1] * 255);
+                const b = Math.round(colArr[i * 3 + 2] * 255);
+
+                pointsData += `${x.toFixed(4)} ${y.toFixed(4)} ${z.toFixed(4)} ${r} ${g} ${b}\n`;
             }
             if (validPoints === 0) {
                 alert("No active points to export.");
@@ -740,14 +845,284 @@
             plyContent += `property float x\n`;
             plyContent += `property float y\n`;
             plyContent += `property float z\n`;
+            plyContent += `property uchar red\n`;
+            plyContent += `property uchar green\n`;
+            plyContent += `property uchar blue\n`;
             plyContent += `end_header\n`;
             plyContent += pointsData;
             
             const blob = new Blob([plyContent], { type: 'text/plain' });
             const link = document.createElement('a');
             link.href = URL.createObjectURL(blob);
-            link.download = `sonar_map_${Date.now()}.ply`;
+            
+            const now = new Date();
+            const timestampStr = now.getFullYear() + '-' +
+                String(now.getMonth() + 1).padStart(2, '0') + '-' +
+                String(now.getDate()).padStart(2, '0') + '_' +
+                String(now.getHours()).padStart(2, '0') + '-' +
+                String(now.getMinutes()).padStart(2, '0') + '-' +
+                String(now.getSeconds()).padStart(2, '0');
+            link.download = `sonar_map_points_${timestampStr}.ply`;
             link.click();
+        });
+
+        // Export to PLY Mesh (Solid 3D Mesh format)
+        exportPlyMeshBtn.addEventListener('click', () => {
+            if (totalActivePoints === 0) {
+                alert("No points to export yet.");
+                return;
+            }
+            const posAttr = pointCloudGeo.getAttribute('position');
+            const posArr = posAttr.array;
+            const colAttr = pointCloudGeo.getAttribute('color');
+            const colArr = colAttr.array;
+
+            // 1. Group unique points into structured cylindrical grid (sweep, angle)
+            const vertices = [];
+            const grid = {};
+            
+            let startIdx = 0;
+            let count = totalActivePoints;
+            if (totalActivePoints === maxPoints) {
+                startIdx = pointWriteIdx;
+            }
+            
+            let minSweep = Infinity;
+            let maxSweep = -Infinity;
+
+            for (let j = 0; j < count; j++) {
+                const i = (startIdx + j) % maxPoints;
+                const x = posArr[i * 3];
+                const z = posArr[i * 3 + 1]; // Three.js Y maps to Global Z (Elevation)
+                const y = posArr[i * 3 + 2]; // Three.js Z maps to Global Y (Starboard/Port)
+                if (z < -9000) continue;     // Filter out cleared/empty points
+                
+                const meta = pointMetadata[i];
+                if (!meta) continue;
+                
+                const sweep = meta.sweep;
+                const angle = meta.angle;
+                
+                if (sweep < minSweep) minSweep = sweep;
+                if (sweep > maxSweep) maxSweep = sweep;
+                
+                // Color scaling 0-255
+                const r = Math.round(colArr[i * 3] * 255);
+                const g = Math.round(colArr[i * 3 + 1] * 255);
+                const b = Math.round(colArr[i * 3 + 2] * 255);
+                
+                const key = `${sweep},${angle}`;
+                if (grid[key] !== undefined) {
+                    const existingIdx = grid[key];
+                    vertices[existingIdx] = { x, y, z, r, g, b };
+                } else {
+                    const vIndex = vertices.length;
+                    vertices.push({ x, y, z, r, g, b });
+                    grid[key] = vIndex;
+                }
+            }
+
+            if (vertices.length === 0) {
+                alert("No active points to export.");
+                return;
+            }
+
+            // 2. Generate triangular mesh faces by linking neighbors in the cylindrical topology
+            const faces = [];
+            if (maxSweep > minSweep) {
+                for (let s = minSweep; s < maxSweep; s++) {
+                    for (let a = 0; a < 400; a++) {
+                        const nextA = (a + 1) % 400;
+                        
+                        const idxA = grid[`${s},${a}`];
+                        const idxB = grid[`${s+1},${a}`];
+                        const idxC = grid[`${s},${nextA}`];
+                        const idxD = grid[`${s+1},${nextA}`];
+                        
+                        if (idxA !== undefined && idxB !== undefined && idxC !== undefined) {
+                            faces.push([idxA, idxB, idxC]);
+                        }
+                        if (idxB !== undefined && idxD !== undefined && idxC !== undefined) {
+                            faces.push([idxB, idxD, idxC]);
+                        }
+                    }
+                }
+            }
+            
+            // 3. Serialize to PLY Format (with vertices, vertex colors, and triangular faces)
+            let plyContent = `ply\n`;
+            plyContent += `format ascii 1.0\n`;
+            plyContent += `element vertex ${vertices.length}\n`;
+            plyContent += `property float x\n`;
+            plyContent += `property float y\n`;
+            plyContent += `property float z\n`;
+            plyContent += `property uchar red\n`;
+            plyContent += `property uchar green\n`;
+            plyContent += `property uchar blue\n`;
+            if (faces.length > 0) {
+                plyContent += `element face ${faces.length}\n`;
+                plyContent += `property list uchar int vertex_indices\n`;
+            }
+            plyContent += `end_header\n`;
+            
+            // Write vertices data (X Y Z R G B)
+            for (let v of vertices) {
+                plyContent += `${v.x.toFixed(4)} ${v.y.toFixed(4)} ${v.z.toFixed(4)} ${v.r} ${v.g} ${v.b}\n`;
+            }
+            
+            // Write face indices
+            for (let f of faces) {
+                plyContent += `3 ${f[0]} ${f[1]} ${f[2]}\n`;
+            }
+            
+            const blob = new Blob([plyContent], { type: 'text/plain' });
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            
+            const now = new Date();
+            const timestampStr = now.getFullYear() + '-' +
+                String(now.getMonth() + 1).padStart(2, '0') + '-' +
+                String(now.getDate()).padStart(2, '0') + '_' +
+                String(now.getHours()).padStart(2, '0') + '-' +
+                String(now.getMinutes()).padStart(2, '0') + '-' +
+                String(now.getSeconds()).padStart(2, '0');
+            link.download = `sonar_map_mesh_${timestampStr}.ply`;
+            link.click();
+        });
+
+        // --- 3D Reconstruction and Mesh Generation Functions ---
+        function updateMeshGeometry() {
+            if (totalActivePoints === 0) return;
+            
+            const posAttr = pointCloudGeo.getAttribute('position');
+            const posArr = posAttr.array;
+            const colAttr = pointCloudGeo.getAttribute('color');
+            const colArr = colAttr.array;
+
+            // 1. Group unique points into structured cylindrical grid (sweep, angle)
+            const vertices = [];
+            const grid = {};
+            
+            let startIdx = 0;
+            let count = totalActivePoints;
+            if (totalActivePoints === maxPoints) {
+                startIdx = pointWriteIdx;
+            }
+            
+            let minSweep = Infinity;
+            let maxSweep = -Infinity;
+
+            for (let j = 0; j < count; j++) {
+                const i = (startIdx + j) % maxPoints;
+                const x = posArr[i * 3];
+                const z = posArr[i * 3 + 1]; // Three.js Y (Global Z)
+                const y = posArr[i * 3 + 2]; // Three.js Z (Global Y)
+                if (z < -9000) continue;     // Filter out cleared/empty points
+                
+                const meta = pointMetadata[i];
+                if (!meta) continue;
+                
+                const sweep = meta.sweep;
+                const angle = meta.angle;
+                
+                if (sweep < minSweep) minSweep = sweep;
+                if (sweep > maxSweep) maxSweep = sweep;
+                
+                const r = colArr[i * 3];
+                const g = colArr[i * 3 + 1];
+                const b = colArr[i * 3 + 2];
+                
+                const key = `${sweep},${angle}`;
+                if (grid[key] !== undefined) {
+                    const existingIdx = grid[key];
+                    vertices[existingIdx] = { x, y, z, r, g, b };
+                } else {
+                    const vIndex = vertices.length;
+                    vertices.push({ x, y, z, r, g, b });
+                    grid[key] = vIndex;
+                }
+            }
+
+            if (vertices.length === 0) return;
+
+            // 2. Generate triangular mesh faces by linking neighbors in the cylindrical topology
+            const indices = [];
+            if (maxSweep > minSweep) {
+                for (let s = minSweep; s < maxSweep; s++) {
+                    for (let a = 0; a < 400; a++) {
+                        const nextA = (a + 1) % 400; // Circular wrap around elevation ring
+                        
+                        const idxA = grid[`${s},${a}`];
+                        const idxB = grid[`${s+1},${a}`];
+                        const idxC = grid[`${s},${nextA}`];
+                        const idxD = grid[`${s+1},${nextA}`];
+                        
+                        // Quad split into two triangles
+                        if (idxA !== undefined && idxB !== undefined && idxC !== undefined) {
+                            indices.push(idxA, idxB, idxC);
+                        }
+                        if (idxB !== undefined && idxD !== undefined && idxC !== undefined) {
+                            indices.push(idxB, idxD, idxC);
+                        }
+                    }
+                }
+            }
+
+            // 3. Build geometry buffers
+            const meshPositions = new Float32Array(vertices.length * 3);
+            const meshColors = new Float32Array(vertices.length * 3);
+            
+            for (let i = 0; i < vertices.length; i++) {
+                const v = vertices[i];
+                meshPositions[i * 3] = v.x;
+                meshPositions[i * 3 + 1] = v.z; // Three.js Y (Global Z)
+                meshPositions[i * 3 + 2] = v.y; // Three.js Z (Global Y)
+                meshColors[i * 3] = v.r;
+                meshColors[i * 3 + 1] = v.g;
+                meshColors[i * 3 + 2] = v.b;
+            }
+
+            meshGeometry.setAttribute('position', new THREE.BufferAttribute(meshPositions, 3));
+            meshGeometry.setAttribute('color', new THREE.BufferAttribute(meshColors, 3));
+            meshGeometry.setIndex(indices);
+            meshGeometry.computeVertexNormals();
+            meshGeometry.attributes.position.needsUpdate = true;
+            meshGeometry.attributes.color.needsUpdate = true;
+            if (meshGeometry.index) {
+                meshGeometry.index.needsUpdate = true;
+            }
+            
+            // Rebuild wireframe helper overlay
+            if (wireframe) {
+                scene.remove(wireframe);
+            }
+            const wireframeGeo = new THREE.WireframeGeometry(meshGeometry);
+            wireframe = new THREE.LineSegments(wireframeGeo, wireframeMat);
+            scene.add(wireframe);
+            
+            updateVisibility();
+        }
+
+        function updateVisibility() {
+            const mode = modelModeSelect.value;
+            if (mode === 'points') {
+                pointCloud.visible = true;
+                mesh.visible = false;
+                if (wireframe) wireframe.visible = false;
+            } else if (mode === 'mesh') {
+                pointCloud.visible = false;
+                mesh.visible = true;
+                if (wireframe) wireframe.visible = true;
+            } else if (mode === 'solid') {
+                pointCloud.visible = false;
+                mesh.visible = true;
+                if (wireframe) wireframe.visible = false;
+            }
+        }
+
+        modelModeSelect.addEventListener('change', () => {
+            updateMeshGeometry();
+            updateVisibility();
         });
 
         controls.addEventListener('start', () => {
@@ -764,6 +1139,15 @@
         function animate() {
             requestAnimationFrame(animate);
             controls.update();
+
+            // Throttled mesh reconstruction for fluid execution
+            const now = performance.now();
+            if (meshNeedsUpdate && (now - lastMeshUpdateTime > 200)) {
+                updateMeshGeometry();
+                meshNeedsUpdate = false;
+                lastMeshUpdateTime = now;
+            }
+
             renderer.render(scene, camera);
         }
         

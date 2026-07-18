@@ -10,6 +10,7 @@ import http.server
 import socketserver
 import numpy as np
 import websockets
+import urllib.request
 
 # Try importing the Blue Robotics Ping library
 try:
@@ -52,6 +53,14 @@ global_state = {
     "robot_roll": 0.0,
     "robot_pitch": 0.0,
     "robot_yaw": 0.0
+}
+
+# Extended Kalman Filter State Matrices for Sensor Fusion
+ekf_state = {
+    "x": np.zeros((4, 1)),  # State Vector: [X, Y, Vx, Vy]
+    "P": np.diag([0.1, 0.1, 0.01, 0.01]),
+    "Q": np.diag([0.002, 0.002, 0.010, 0.010]),
+    "BASE_R_DVL": np.diag([0.05, 0.05])
 }
 
 class Ping360Emulator:
@@ -138,27 +147,36 @@ class Ping360Emulator:
 # --- BACKGROUND CLIENT THREADS ---
 
 def mavlink_imu_thread():
-    """Reads attitude telemetry from Mavlink UDP stream at 192.168.2.2:14550."""
+    """Reads attitude telemetry from Mavlink UDP stream or BlueOS HTTP REST API fallback."""
     global global_state, global_settings
-    if not MAVLINK_AVAILABLE:
-        print("[Mavlink] Pymavlink library not found. Running in emulated attitude mode.")
-        return
-        
-    print("[Mavlink] Listening for Mavlink telemetry from 192.168.2.2:14550...")
+    print("[Mavlink] Listening for Mavlink telemetry...")
+    
+    blueos_ip = "192.168.2.2"
+    bulk_url = f"http://{blueos_ip}:6040/mavlink/vehicles/1/components/1/messages"
+    last_msg_time = 0.0
+    
+    # Try connecting to UDP first
+    master = None
+    if MAVLINK_AVAILABLE:
+        try:
+            master = mavutil.mavlink_connection("udpout:192.168.2.2:14550", source_system=255)
+            print("[Mavlink] Initialized UDP connection at udpout:192.168.2.2:14550")
+        except Exception as e:
+            print(f"[Mavlink] UDP connection setup failed: {e}. Falling back to HTTP REST API.")
+            master = None
+            
     while global_state["is_running"]:
         if global_settings["test_imu_fail"]:
             global_state["imu_connected"] = False
             time.sleep(0.5)
             continue
             
-        try:
-            # Connect as udpout (send heartbeats to 192.168.2.2, listen on bound port)
-            master = mavutil.mavlink_connection("udpout:192.168.2.2:14550", source_system=255)
-            last_msg_time = time.time()
-            
-            while global_state["is_running"] and not global_settings["test_imu_fail"]:
-                # Non-blocking read (timeout 0.5s)
-                msg = master.recv_match(type=['ATTITUDE', 'HEARTBEAT'], blocking=True, timeout=0.5)
+        got_msg = False
+        
+        # 1. Try reading from UDP
+        if master is not None:
+            try:
+                msg = master.recv_match(type=['ATTITUDE', 'HEARTBEAT'], blocking=False)
                 if msg:
                     msg_type = msg.get_type()
                     if msg_type == 'ATTITUDE':
@@ -167,21 +185,45 @@ def mavlink_imu_thread():
                         global_state["imu_data"]["pitch"] = msg.pitch
                         global_state["imu_data"]["yaw"] = msg.yaw
                         last_msg_time = time.time()
+                        got_msg = True
                     elif msg_type == 'HEARTBEAT':
-                        # Autopilot connected, keep connection alive
                         master.mav.heartbeat_send(
                             mavutil.mavlink.MAV_TYPE_GCS,
                             mavutil.mavlink.MAV_AUTOPILOT_INVALID, 0, 0, 0
                         )
+                        got_msg = True
+            except Exception:
+                master = None
                 
-                # Check for link timeout (3 seconds)
-                if time.time() - last_msg_time > 3.0:
-                    global_state["imu_connected"] = False
-                    
-            master.close()
-        except Exception as e:
+        # 2. Fall back to BlueOS REST HTTP API if UDP is not active or hasn't received a message recently
+        if not got_msg and (time.time() - last_msg_time > 1.5):
+            try:
+                req = urllib.request.Request(bulk_url)
+                with urllib.request.urlopen(req, timeout=0.08) as response:
+                    if response.status == 200:
+                        payload = json.loads(response.read().decode('utf-8'))
+                        att_packet = payload.get("ATTITUDE", {}).get("message", {})
+                        if att_packet:
+                            global_state["imu_connected"] = True
+                            global_state["imu_data"]["roll"] = float(att_packet.get("roll", 0.0))
+                            global_state["imu_data"]["pitch"] = float(att_packet.get("pitch", 0.0))
+                            global_state["imu_data"]["yaw"] = float(att_packet.get("yaw", 0.0))
+                            last_msg_time = time.time()
+                            got_msg = True
+            except Exception:
+                pass
+                
+        # Check for link timeout (3 seconds)
+        if time.time() - last_msg_time > 3.0:
             global_state["imu_connected"] = False
-            time.sleep(2.0)
+            
+        time.sleep(0.05)
+        
+    if master is not None:
+        try:
+            master.close()
+        except Exception:
+            pass
 
 
 def dvl_client_thread():
@@ -201,7 +243,6 @@ def dvl_client_thread():
             sock.settimeout(2.0)
             sock.connect(("192.168.2.3", 16171))
             print("[DVL] Connected to Water Linked TCP API at 192.168.2.3:16171")
-            global_state["dvl_connected"] = True
             
             buffer = ""
             while global_state["is_running"] and not global_settings["test_dvl_fail"]:
@@ -215,14 +256,18 @@ def dvl_client_thread():
                     if line.strip():
                         try:
                             msg = json.loads(line)
-                            # JSON: {"vx": ..., "vy": ..., "vz": ..., "valid": true}
-                            if msg.get("valid", False):
+                            # JSON: {"vx": ..., "vy": ..., "vz": ..., "velocity_valid": true, "altitude": ...}
+                            is_valid = msg.get("velocity_valid", msg.get("valid", False))
+                            if is_valid:
                                 global_state["dvl_connected"] = True
                                 global_state["dvl_data"]["vx"] = msg.get("vx", 0.0)
                                 global_state["dvl_data"]["vy"] = msg.get("vy", 0.0)
                                 global_state["dvl_data"]["vz"] = msg.get("vz", 0.0)
-                                global_state["dvl_data"]["alt"] = msg.get("alt", 0.0)
+                                global_state["dvl_data"]["alt"] = msg.get("altitude", msg.get("alt", 0.0))
+                                global_state["dvl_data"]["fom"] = msg.get("fom", 0.0)
                                 global_state["dvl_data"]["last_update"] = time.time()
+                            else:
+                                global_state["dvl_connected"] = False
                         except Exception:
                             pass
                             
@@ -293,6 +338,9 @@ async def ws_handler(websocket):
                 global_state["robot_x"] = 0.0
                 global_state["robot_y"] = 0.0
                 global_state["robot_z"] = 0.0
+                # Reset EKF state and covariance matrices
+                ekf_state["x"] = np.zeros((4, 1))
+                ekf_state["P"] = np.diag([0.1, 0.1, 0.01, 0.01])
                 print("[WS] Reset navigation coordinates.")
                 
     except Exception:
@@ -373,16 +421,47 @@ def update_dead_reckoning(dt, current_time):
     ])
     R = Rz @ Ry @ Rx
     
-    # Complete DVL position integration if DVL is connected
+    # Complete DVL position integration if DVL is connected (using Kalman Filter Fusion)
     if global_state["dvl_connected"] and not global_settings["test_dvl_fail"]:
         vx_local = global_state["dvl_data"]["vx"]
         vy_local = global_state["dvl_data"]["vy"]
         vz_local = global_state["dvl_data"]["vz"]
+        
+        # 1. EKF State Prediction Step
+        F = np.array([
+            [1.0, 0.0,  dt, 0.0],
+            [0.0, 1.0, 0.0,  dt],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0]
+        ])
+        ekf_state["x"] = F @ ekf_state["x"]
+        ekf_state["P"] = F @ ekf_state["P"] @ F.T + ekf_state["Q"]
+        
+        # Rotate DVL local velocities to world coordinate speeds
         v_local = np.array([vx_local, vy_local, vz_local])
         v_global = R @ v_local
         
-        global_state["robot_x"] += v_global[0] * dt
-        global_state["robot_y"] += v_global[1] * dt
+        # 2. EKF Measurement Update Step using rotated DVL world speeds
+        z_dvl = np.array([[v_global[0]], [v_global[1]]])
+        H_dvl = np.array([
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0]
+        ])
+        y_err_dvl = z_dvl - H_dvl @ ekf_state["x"]
+        
+        fom = global_state["dvl_data"].get("fom", 0.0)
+        confidence = (1.0 - min(0.4, fom) / 0.4)
+        active_R_dvl = ekf_state["BASE_R_DVL"] / max(0.01, confidence ** 2)
+        
+        S_dvl = H_dvl @ ekf_state["P"] @ H_dvl.T + active_R_dvl
+        K_dvl = ekf_state["P"] @ H_dvl.T @ np.linalg.inv(S_dvl)
+        
+        ekf_state["x"] = ekf_state["x"] + K_dvl @ y_err_dvl
+        ekf_state["P"] = (np.eye(4) - K_dvl @ H_dvl) @ ekf_state["P"]
+        
+        # Update global coordinates
+        global_state["robot_x"] = float(ekf_state["x"][0, 0])
+        global_state["robot_y"] = float(ekf_state["x"][1, 0])
         global_state["robot_z"] += v_global[2] * dt
 
     # 3. Test Case: Inject Systematic Position Drift
@@ -437,7 +516,10 @@ def process_sonar_line(response, R_pose, t_pose, angle_gradian):
         P_robot = np.array([x_robot, y_robot, z_robot])
         P_global = R_pose @ P_robot + t_pose
         
+        # Get exact timestamp for measurement
+        timestamp_str = time.strftime("%Y-%m-%dT%H:%M:%S") + f".{int(time.time()*1000)%1000:03d}"
         points_to_send.append({
+            "timestamp": timestamp_str,
             "x": float(P_global[0]),
             "y": float(P_global[1]),
             "z": float(P_global[2]),
@@ -467,9 +549,22 @@ async def run_sonar_engine():
     else:
         device = Ping360()
         conn = args.connection
+        udp_port = args.udp_port
+        
+        # Parse connection string if it includes port (e.g., 192.168.2.2:9092)
+        if ":" in conn:
+            conn_parts = conn.split(":", 1)
+            conn = conn_parts[0]
+            try:
+                udp_port = int(conn_parts[1])
+            except ValueError:
+                pass
+                
         if "." in conn:
-            device.connect_udp(conn, args.udp_port)
+            print(f"[System] Connecting to Ping360 UDP stream at {conn}:{udp_port}")
+            device.connect_udp(conn, udp_port)
         else:
+            print(f"[System] Connecting to Ping360 serial at {conn} (Baudrate: {args.baudrate})")
             device.connect_serial(conn, args.baudrate)
             
         if device.initialize():
@@ -592,7 +687,7 @@ async def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Ping360 Real-Time 3D Mapping & Sensor Fusion Engine")
-    parser.add_argument("--connection", type=str, default="COM3", help="Serial port (e.g. COM3) or IP address of Ping360")
+    parser.add_argument("--connection", type=str, default="192.168.2.2:9092", help="Serial port or IP address of Ping360 (default: 192.168.2.2:9092)")
     parser.add_argument("--baudrate", type=int, default=115200, help="Baudrate for serial connection (default 115200)")
     parser.add_argument("--udp-port", type=int, default=9090, help="UDP port (default 9090)")
     parser.add_argument("--emulate", action="store_true", help="Force emulation mode")
