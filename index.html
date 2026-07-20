@@ -233,10 +233,23 @@
                 <input type="range" id="threshold-slider" min="10" max="230" value="110">
                 <span id="threshold-val" style="font-family: monospace;">110</span>
             </div>
-            <div class="bar-item">
+            <div class="bar-item" id="speed-control-item">
                 <span class="bar-label">Speed:</span>
                 <input type="range" id="speed-slider" min="0.0" max="1.0" step="0.02" value="0.20">
                 <span id="speed-val" style="font-family: monospace;">0.20</span>
+            </div>
+            <div class="bar-item">
+                <span class="bar-label">Scan Step:</span>
+                <select id="scan-step-select" class="btn" style="padding: 2px 6px; font-weight: bold; background: #fffaf0; border-color: #dd6b20; color: #dd6b20;">
+                    <option value="1" selected>1g (Fine)</option>
+                    <option value="2">2g</option>
+                    <option value="4">4g</option>
+                    <option value="5">5g (Medium)</option>
+                    <option value="8">8g</option>
+                    <option value="10">10g</option>
+                    <option value="15">15g</option>
+                    <option value="20">20g (Coarse)</option>
+                </select>
             </div>
         </div>
 
@@ -308,6 +321,7 @@
         const exportPlyPtsBtn = document.getElementById('export-ply-pts-btn');
         const exportPlyMeshBtn = document.getElementById('export-ply-mesh-btn');
         const modelModeSelect = document.getElementById('model-mode-select');
+        const scanStepSelect = document.getElementById('scan-step-select');
         
         // Status dots
         const statusDot = document.getElementById('status-dot');
@@ -566,6 +580,14 @@
                     imuDot.className = msg.imu_connected ? "status-dot connected" : "status-dot";
                     dvlDot.className = msg.dvl_connected ? "status-dot connected" : "status-dot";
                     
+                    // Dynamically show/hide Speed slider based on Emulation Mode
+                    const speedItem = document.getElementById('speed-control-item');
+                    if (msg.emulate) {
+                        speedItem.style.display = 'flex';
+                    } else {
+                        speedItem.style.display = 'none';
+                    }
+                    
                     // Update robot indicator mesh pose
                     // Coordinate mapping:
                     // Three.js X = Robot X (forward)
@@ -676,6 +698,7 @@
                     action: "update_settings",
                     intensity_threshold: parseInt(thresholdSlider.value),
                     speed: parseFloat(speedSlider.value),
+                    angle_step: parseInt(scanStepSelect.value),
                     test_imu_fail: testImuFail.checked,
                     test_dvl_fail: testDvlFail.checked,
                     test_inject_drift: testInjectDrift.checked
@@ -690,6 +713,10 @@
 
         speedSlider.addEventListener('input', () => {
             speedVal.innerText = speedSlider.value;
+            syncSettings();
+        });
+
+        scanStepSelect.addEventListener('change', () => {
             syncSettings();
         });
 

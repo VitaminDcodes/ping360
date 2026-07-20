@@ -8,16 +8,17 @@ This system performs live dead-reckoning and coordinate projection by fusing ran
 
 ## 🚀 Key Features
 
-*   **Real-Time 3D Reconstruction**: Visualizes sonar sweeps dynamically as a 3D point cloud.
-*   **Multi-Sensor Fusion**:
-    *   **Blue Robotics Ping360**: Polar acoustic sweeps (angle and intensity/distance bins).
-    *   **Mavlink Attitude Telemetry**: Real-time Roll, Pitch, and Yaw to orient the scans.
-    *   **Water Linked DVL Telemetry**: Velocity vectors ($v_x, v_y, v_z$) integrated for precise position tracking.
+*   **Real-Time 3D Reconstruction**: Visualizes sonar sweeps dynamically as a 3D point cloud, Surface mesh grid, or shaded Solid Model.
+*   **Multi-Sensor EKF Fusion**:
+    *   **Blue Robotics Ping360**: Polar acoustic range sweeps.
+    *   **Mavlink Attitude Telemetry**: Auto-fallback REST API queries (`192.168.2.2:6040`) for Roll, Pitch, and Yaw if UDP is offline.
+    *   **Water Linked DVL Telemetry**: Velocity vectors ($v_x, v_y, v_z$) parsed from raw streams and fused with IMU using a **2D Extended Kalman Filter (EKF)**.
 *   **Interactive Three.js Dashboard**:
-    *   Sleek light-themed dashboard with complete orbital controls.
-    *   Adjustable intensity thresholding, forward speed settings, and sensor offset controls.
-    *   Visual representation of the ROV's historical trajectory.
-*   **Dual Execution Modes**: Includes an emulator sandbox with simulated tunnel structures to test the software package without hardware.
+    *   Sleek light-themed dashboard with orbital camera controls and 3D ROV tracking.
+    *   **Dynamic Controls**: The manual **Speed** slider hides automatically in Hardware Mode (since speed is DVL-driven).
+    *   **Scan Step Selector**: Selectable step sizes from `1g (Fine)` to `20g (Coarse)` to adjust sweep rates and resolution.
+    *   Adjustable intensity thresholding to filter acoustic return noise, and sensor offset configs.
+*   **Dual Execution Modes**: Sandbox simulation with structured tunnel environments, or Real Hardware Mode with actual UDP/serial device connection loops.
 
 ---
 
@@ -96,10 +97,12 @@ Use this mode to test and run the visualization without being connected to physi
 *   **Web Dashboard**: Open `http://localhost:8000` in your web browser.
 
 #### 2. Real Hardware Mode
-Executes on real telemetry data. It listens for active serial or UDP devices.
-*   **Run command**: `python mapper_3d_engine.py --connection <PORT>` (e.g., `COM3` on Windows or `/dev/ttyUSB0` on Linux).
-*   **IMU Input**: Listens for Mavlink telemetry broadcast on UDP Port `14550`.
-*   **DVL Input**: Connects to the Water Linked DVL JSON stream on TCP Port `16171` (Default IP: `192.168.2.3`).
+Executes on real telemetry data. It connects to active serial or UDP devices.
+*   **Run command**: `python mapper_3d_engine.py --connection <PORT_OR_IP>` (defaults to `192.168.2.2:9092`).
+*   **Startup Automation**: Run `.\run_mapping_system.ps1` in PowerShell and press `Enter` twice to immediately launch hardware mode using default parameters.
+*   **Active Retry Loop**: The engine attempts to initialize connection to the Ping360 every 3 seconds if offline, displaying actual status lights on the dashboard.
+*   **IMU Telemetry**: Listens on UDP Port `14550`. If UDP is unresponsive, it queries the BlueOS REST API bulk messages endpoint (`http://192.168.2.2:6040/mavlink/vehicles/1/components/1/messages`) as auto-fallback.
+*   **DVL Telemetry**: Connects to the Water Linked DVL JSON TCP stream on Port `16171` (IP: `192.168.2.3`).
 
 ---
 
