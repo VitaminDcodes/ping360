@@ -329,6 +329,7 @@ async def ws_handler(websocket):
             if action == "update_settings":
                 global_settings["intensity_threshold"] = data.get("intensity_threshold", 110)
                 global_settings["speed"] = data.get("speed", 0.20)
+                global_settings["angle_step"] = data.get("angle_step", 1)
                 global_settings["test_imu_fail"] = data.get("test_imu_fail", False)
                 global_settings["test_dvl_fail"] = data.get("test_dvl_fail", False)
                 global_settings["test_inject_drift"] = data.get("test_inject_drift", False)
@@ -541,12 +542,14 @@ async def run_sonar_engine():
     device = None
     emulated = False
     
+    # Check if we should run in emulate mode
     if global_settings["emulate"] or not PING_SDK_AVAILABLE:
         device = Ping360Emulator(num_samples=250, sample_period=1200)
         emulated = True
         global_state["sonar_connected"] = False
         print("[System] Running in Sonar EMULATED mode.")
     else:
+        # Real hardware mode
         device = Ping360()
         conn = args.connection
         udp_port = args.udp_port
@@ -561,29 +564,17 @@ async def run_sonar_engine():
                 pass
                 
         if "." in conn:
-            print(f"[System] Connecting to Ping360 UDP stream at {conn}:{udp_port}")
+            print(f"[System] Initializing Ping360 UDP stream at {conn}:{udp_port}")
             device.connect_udp(conn, udp_port)
         else:
-            print(f"[System] Connecting to Ping360 serial at {conn} (Baudrate: {args.baudrate})")
+            print(f"[System] Initializing Ping360 serial at {conn} (Baudrate: {args.baudrate})")
             device.connect_serial(conn, args.baudrate)
-            
-        if device.initialize():
-            device.set_gain_setting(1)
-            device.set_number_of_samples(250)
-            device.set_sample_period(1200)
-            device.set_transmit_frequency(750)
-            print("[System] Connected to physical Ping360 Hardware.")
-            global_state["sonar_connected"] = True
-        else:
-            print("[System] Ping360 connection failed! Falling back to Emulator.")
-            device = Ping360Emulator(num_samples=250, sample_period=1200)
-            emulated = True
-            global_state["sonar_connected"] = False
             
     last_loop_time = time.time()
     start_time = time.time()
     angle = 0
     last_trajectory_time = 0
+    last_conn_retry_time = 0.0
     
     try:
         while global_state["is_running"]:
@@ -596,7 +587,27 @@ async def run_sonar_engine():
             if dt > 0.2:
                 dt = 0.05
                 
-            # 1. Update pose via dead reckoning
+            # 1. Periodically check and initialize real device if not connected
+            if not emulated:
+                if not global_state["sonar_connected"]:
+                    if now - last_conn_retry_time > 3.0:
+                        last_conn_retry_time = now
+                        try:
+                            if device.initialize():
+                                device.set_gain_setting(1)
+                                device.set_number_of_samples(250)
+                                device.set_sample_period(1200)
+                                device.set_transmit_frequency(750)
+                                print("[System] Connected to physical Ping360 Hardware.")
+                                global_state["sonar_connected"] = True
+                            else:
+                                print("[System] Ping360 connection failed. Retrying in 3s...")
+                                global_state["sonar_connected"] = False
+                        except Exception as e:
+                            print(f"[System] Sonar initialization error: {e}. Retrying in 3s...")
+                            global_state["sonar_connected"] = False
+                            
+            # 2. Update pose via dead reckoning
             R_pose, t_pose = update_dead_reckoning(dt, current_time)
             
             # Store trajectory nodes periodically
@@ -610,12 +621,18 @@ async def run_sonar_engine():
                     "path": global_state["trajectory"]
                 }))
                 
-            # 2. Query scan line (transmitAngle is blocking, run in separate thread)
+            # 3. Query scan line if emulator or real device is connected
+            response = None
             if emulated:
                 response = device.transmitAngle(angle, robot_x=t_pose[0])
             else:
-                response = await asyncio.to_thread(device.transmitAngle, angle)
-                
+                if global_state["sonar_connected"]:
+                    try:
+                        response = await asyncio.to_thread(device.transmitAngle, angle)
+                    except Exception as e:
+                        print(f"[System] Sonar transmit angle exception: {e}")
+                        global_state["sonar_connected"] = False
+                        
             if response:
                 points = process_sonar_line(response, R_pose, t_pose, angle)
                 if points:
@@ -624,13 +641,14 @@ async def run_sonar_engine():
                         "points": points
                     }))
                     
-            # 3. Broadcast telemetry packet including connection statuses
+            # 4. Broadcast telemetry packet including accurate status
             telemetry_data = {
                 "type": "telemetry",
                 "scan_angle": angle,
-                "sonar_connected": global_state["sonar_connected"] or emulated,
-                "imu_connected": (global_state["imu_connected"] or emulated) and not global_settings["test_imu_fail"],
-                "dvl_connected": (global_state["dvl_connected"] or emulated) and not global_settings["test_dvl_fail"],
+                "emulate": emulated,
+                "sonar_connected": emulated or global_state["sonar_connected"],
+                "imu_connected": (emulated or global_state["imu_connected"]) and not global_settings["test_imu_fail"],
+                "dvl_connected": (emulated or global_state["dvl_connected"]) and not global_settings["test_dvl_fail"],
                 "robot_pose": {
                     "x": float(t_pose[0]),
                     "y": float(t_pose[1]),
@@ -642,7 +660,9 @@ async def run_sonar_engine():
             }
             await broadcast(json.dumps(telemetry_data))
             
-            angle = (angle + 1) % 400
+            # 5. Increment scan angle based on UI Step settings
+            angle_step = global_settings.get("angle_step", 1)
+            angle = (angle + angle_step) % 400
             
             await asyncio.sleep(0.01)
             
