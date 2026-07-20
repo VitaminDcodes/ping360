@@ -254,6 +254,19 @@
         </div>
 
         <div class="bar-group">
+            <div class="bar-item">
+                <span class="bar-label">IMU Yaw Offset:</span>
+                <input type="range" id="imu-yaw-slider" min="0" max="360" step="5" value="270">
+                <span id="imu-yaw-val" style="font-family: monospace;">270°</span>
+            </div>
+            <div class="bar-item">
+                <span class="bar-label">Sonar Offset:</span>
+                <input type="range" id="sonar-offset-slider" min="0" max="360" step="5" value="0">
+                <span id="sonar-offset-val" style="font-family: monospace;">0°</span>
+            </div>
+        </div>
+
+        <div class="bar-group">
             <label class="toggle-container">
                 <input type="checkbox" id="grid-toggle" checked>
                 <span>Show Grid</span>
@@ -322,6 +335,10 @@
         const exportPlyMeshBtn = document.getElementById('export-ply-mesh-btn');
         const modelModeSelect = document.getElementById('model-mode-select');
         const scanStepSelect = document.getElementById('scan-step-select');
+        const imuYawSlider = document.getElementById('imu-yaw-slider');
+        const imuYawVal = document.getElementById('imu-yaw-val');
+        const sonarOffsetSlider = document.getElementById('sonar-offset-slider');
+        const sonarOffsetVal = document.getElementById('sonar-offset-val');
         
         // Status dots
         const statusDot = document.getElementById('status-dot');
@@ -699,6 +716,8 @@
                     intensity_threshold: parseInt(thresholdSlider.value),
                     speed: parseFloat(speedSlider.value),
                     angle_step: parseInt(scanStepSelect.value),
+                    imu_yaw_offset_deg: parseFloat(imuYawSlider.value),
+                    sonar_angle_offset: parseFloat(sonarOffsetSlider.value),
                     test_imu_fail: testImuFail.checked,
                     test_dvl_fail: testDvlFail.checked,
                     test_inject_drift: testInjectDrift.checked
@@ -717,6 +736,16 @@
         });
 
         scanStepSelect.addEventListener('change', () => {
+            syncSettings();
+        });
+
+        imuYawSlider.addEventListener('input', () => {
+            imuYawVal.innerText = imuYawSlider.value + "°";
+            syncSettings();
+        });
+
+        sonarOffsetSlider.addEventListener('input', () => {
+            sonarOffsetVal.innerText = sonarOffsetSlider.value + "°";
             syncSettings();
         });
 

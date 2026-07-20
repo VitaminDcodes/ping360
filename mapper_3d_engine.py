@@ -31,6 +31,8 @@ global_settings = {
     "intensity_threshold": 110,
     "speed": 0.20,             # robot forward speed in m/s (when DVL is offline)
     "offset_x": -0.5,          # sensor mounting offset on robot X axis in meters
+    "imu_yaw_offset_deg": 270.0, # IMU Yaw mounting offset in degrees (Default 270 deg / Yaw270)
+    "sonar_angle_offset": 0.0,  # Ping360 Transducer angular offset in degrees
     "emulate": False,
     "test_imu_fail": False,    # Force IMU offline in software for testing
     "test_dvl_fail": False,    # Force DVL offline in software for testing
@@ -330,6 +332,8 @@ async def ws_handler(websocket):
                 global_settings["intensity_threshold"] = data.get("intensity_threshold", 110)
                 global_settings["speed"] = data.get("speed", 0.20)
                 global_settings["angle_step"] = data.get("angle_step", 1)
+                global_settings["imu_yaw_offset_deg"] = float(data.get("imu_yaw_offset_deg", 270.0))
+                global_settings["sonar_angle_offset"] = float(data.get("sonar_angle_offset", 0.0))
                 global_settings["test_imu_fail"] = data.get("test_imu_fail", False)
                 global_settings["test_dvl_fail"] = data.get("test_dvl_fail", False)
                 global_settings["test_inject_drift"] = data.get("test_inject_drift", False)
@@ -380,7 +384,9 @@ def update_dead_reckoning(dt, current_time):
     if global_state["imu_connected"] and not global_settings["test_imu_fail"]:
         roll = global_state["imu_data"]["roll"]
         pitch = global_state["imu_data"]["pitch"]
-        yaw = global_state["imu_data"]["yaw"]
+        raw_yaw = global_state["imu_data"]["yaw"]
+        yaw_offset_rad = math.radians(global_settings.get("imu_yaw_offset_deg", 270.0))
+        yaw = (raw_yaw + yaw_offset_rad) % (2.0 * math.pi)
     else:
         if emulate:
             # Emulated orientation aligned with the trajectory tangent
@@ -482,8 +488,12 @@ def process_sonar_line(response, R_pose, t_pose, angle_gradian):
     intensities = np.frombuffer(response.data, dtype=np.uint8)
     distance_per_bin = 1500.0 * (response.sample_period * 25e-9) / 2.0
     
+    # Apply Sonar Transducer Angle Offset (convert deg offset to gradians: deg * (400/360))
+    sonar_offset_deg = global_settings.get("sonar_angle_offset", 0.0)
+    effective_angle_grad = (angle_gradian + sonar_offset_deg * (400.0 / 360.0)) % 400.0
+    
     # Gradian to radians
-    angle_rad = angle_gradian * (2.0 * math.pi / 400.0)
+    angle_rad = effective_angle_grad * (2.0 * math.pi / 400.0)
     dir_y = math.sin(angle_rad)
     dir_z = math.cos(angle_rad)
     
