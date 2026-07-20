@@ -10,8 +10,8 @@ Write-Host "  1. Emulator / Sandbox Mode (Simulated DVL, IMU, and Sonar)" -Foreg
 Write-Host "  2. Real Hardware Mode (Connects to actual serial/UDP sensors)" -ForegroundColor Yellow
 Write-Host ""
 
-$choice = Read-Host "Select option [1-2] (Default is 1)"
-if ($choice -eq "") { $choice = "1" }
+$choice = Read-Host "Select option [1-2] (Default is 2)"
+if ($choice -eq "") { $choice = "2" }
 
 if ($choice -eq "1") {
     Write-Host "`nStarting in EMULATOR mode..." -ForegroundColor Green
@@ -22,8 +22,8 @@ if ($choice -eq "1") {
     .\venv\Scripts\python.exe mapper_3d_engine.py --emulate
 }
 elseif ($choice -eq "2") {
-    $port = Read-Host "`nEnter Ping360 Serial Port or IP (Default: COM3)"
-    if ($port -eq "") { $port = "COM3" }
+    $port = Read-Host "`nEnter Ping360 Serial Port or IP (Default: 192.168.2.2:9092)"
+    if ($port -eq "") { $port = "192.168.2.2:9092" }
     
     Write-Host "`nStarting in REAL HARDWARE mode (Ping360: $port)..." -ForegroundColor Yellow
     Write-Host "Attitude Telemetry: UDP Port 14550 (IP: 192.168.2.2)" -ForegroundColor Cyan
