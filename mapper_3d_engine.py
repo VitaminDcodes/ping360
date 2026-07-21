@@ -11,6 +11,7 @@ import socketserver
 import numpy as np
 import websockets
 import urllib.request
+import os
 
 # Try importing the Blue Robotics Ping library
 try:
@@ -31,11 +32,43 @@ global_settings = {
     "intensity_threshold": 110,
     "speed": 0.20,             # robot forward speed in m/s (when DVL is offline)
     "offset_x": -0.5,          # sensor mounting offset on robot X axis in meters
+    "imu_yaw_offset_deg": 270.0, # IMU Yaw mounting offset in degrees (Default 270 deg / Yaw270)
+    "sonar_angle_offset": 0.0,  # Ping360 Transducer angular offset in degrees
+    "min_range_m": 0.25,        # Minimum range cutoff to blank out ROV chassis / near-field noise (meters)
     "emulate": False,
     "test_imu_fail": False,    # Force IMU offline in software for testing
     "test_dvl_fail": False,    # Force DVL offline in software for testing
     "test_inject_drift": False # Inject systematic position drift for testing
 }
+
+SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings.json")
+
+def load_saved_settings():
+    if os.path.exists(SETTINGS_FILE):
+        try:
+            with open(SETTINGS_FILE, "r") as f:
+                saved = json.load(f)
+                for k, v in saved.items():
+                    if k in global_settings:
+                        global_settings[k] = v
+                print(f"[SETTINGS] Loaded saved settings from {SETTINGS_FILE}: {saved}")
+        except Exception as e:
+            print(f"[SETTINGS] Failed to load {SETTINGS_FILE}: {e}")
+
+def save_current_settings():
+    try:
+        to_save = {
+            "intensity_threshold": global_settings.get("intensity_threshold", 110),
+            "speed": global_settings.get("speed", 0.20),
+            "imu_yaw_offset_deg": global_settings.get("imu_yaw_offset_deg", 270.0),
+            "sonar_angle_offset": global_settings.get("sonar_angle_offset", 0.0),
+            "min_range_m": global_settings.get("min_range_m", 0.25)
+        }
+        with open(SETTINGS_FILE, "w") as f:
+            json.dump(to_save, f, indent=2)
+        print(f"[SETTINGS] Saved default settings to {SETTINGS_FILE}: {to_save}")
+    except Exception as e:
+        print(f"[SETTINGS] Failed to save {SETTINGS_FILE}: {e}")
 
 # Global State
 global_state = {
@@ -330,9 +363,20 @@ async def ws_handler(websocket):
                 global_settings["intensity_threshold"] = data.get("intensity_threshold", 110)
                 global_settings["speed"] = data.get("speed", 0.20)
                 global_settings["angle_step"] = data.get("angle_step", 1)
+                global_settings["imu_yaw_offset_deg"] = float(data.get("imu_yaw_offset_deg", 270.0))
+                global_settings["sonar_angle_offset"] = float(data.get("sonar_angle_offset", 0.0))
+                global_settings["min_range_m"] = float(data.get("min_range_m", 0.25))
                 global_settings["test_imu_fail"] = data.get("test_imu_fail", False)
                 global_settings["test_dvl_fail"] = data.get("test_dvl_fail", False)
                 global_settings["test_inject_drift"] = data.get("test_inject_drift", False)
+                
+            elif action == "save_default_settings":
+                global_settings["intensity_threshold"] = data.get("intensity_threshold", global_settings["intensity_threshold"])
+                global_settings["speed"] = data.get("speed", global_settings["speed"])
+                global_settings["imu_yaw_offset_deg"] = float(data.get("imu_yaw_offset_deg", global_settings["imu_yaw_offset_deg"]))
+                global_settings["sonar_angle_offset"] = float(data.get("sonar_angle_offset", global_settings["sonar_angle_offset"]))
+                global_settings["min_range_m"] = float(data.get("min_range_m", global_settings["min_range_m"]))
+                save_current_settings()
                 
             elif action == "clear":
                 global_state["trajectory"].clear()
@@ -380,7 +424,9 @@ def update_dead_reckoning(dt, current_time):
     if global_state["imu_connected"] and not global_settings["test_imu_fail"]:
         roll = global_state["imu_data"]["roll"]
         pitch = global_state["imu_data"]["pitch"]
-        yaw = global_state["imu_data"]["yaw"]
+        raw_yaw = global_state["imu_data"]["yaw"]
+        yaw_offset_rad = math.radians(global_settings.get("imu_yaw_offset_deg", 270.0))
+        yaw = (raw_yaw + yaw_offset_rad) % (2.0 * math.pi)
     else:
         if emulate:
             # Emulated orientation aligned with the trajectory tangent
@@ -478,46 +524,62 @@ def update_dead_reckoning(dt, current_time):
 
 
 def process_sonar_line(response, R_pose, t_pose, angle_gradian):
-    """Processes 2D polar sonar scans into 3D Cartesian coordinates fused with robot pose."""
+    """Processes 2D polar sonar scans into 3D Cartesian coordinates fused with robot pose.
+    Extracts crisp local peak maxima above threshold beyond min_range_m.
+    """
     intensities = np.frombuffer(response.data, dtype=np.uint8)
+    num_bins = len(intensities)
+    if num_bins < 3:
+        return []
+
     distance_per_bin = 1500.0 * (response.sample_period * 25e-9) / 2.0
+    min_range = float(global_settings.get("min_range_m", 0.25))
+    base_threshold = int(global_settings.get("intensity_threshold", 110))
     
-    # Gradian to radians
-    angle_rad = angle_gradian * (2.0 * math.pi / 400.0)
+    # Apply Sonar Transducer Angle Offset (convert deg offset to gradians: deg * (400/360))
+    sonar_offset_deg = global_settings.get("sonar_angle_offset", 0.0)
+    effective_angle_grad = (angle_gradian + sonar_offset_deg * (400.0 / 360.0)) % 400.0
+    
+    angle_rad = effective_angle_grad * (2.0 * math.pi / 400.0)
     dir_y = math.sin(angle_rad)
     dir_z = math.cos(angle_rad)
     
-    points_to_send = []
-    
-    threshold = global_settings["intensity_threshold"]
-    valid_indices = np.where(intensities >= threshold)[0]
-    
-    # Subsample indices to keep operations responsive
-    if len(valid_indices) > 30:
-        valid_indices = valid_indices[::2]
-        
-    for bin_idx in valid_indices:
-        intensity = int(intensities[bin_idx])
+    # 1. Extract Local Maxima (Peaks) above threshold beyond min_range
+    raw_peaks = []
+    for bin_idx in range(1, num_bins - 1):
         d = bin_idx * distance_per_bin
-        
-        if d < 0.25:
+        if d < min_range:
             continue
             
-        # Sonar Y-Z vertical plane scan
+        intensity = int(intensities[bin_idx])
+        if intensity >= base_threshold and intensity >= int(intensities[bin_idx - 1]) and intensity >= int(intensities[bin_idx + 1]):
+            raw_peaks.append((bin_idx, d, intensity))
+            
+    if not raw_peaks:
+        return []
+
+    # 2. Distance-based Peak Thinning (Ensure peaks are distinct surfaces at least 5cm apart)
+    selected_peaks = []
+    last_d = -10.0
+    for bin_idx, d, intensity in sorted(raw_peaks, key=lambda x: x[1]):
+        if d - last_d >= 0.05: # At least 5cm between distinct target surfaces
+            selected_peaks.append((bin_idx, d, intensity))
+            last_d = d
+
+    # 3. Project Selected Peaks into 3D Global Space
+    points_to_send = []
+    for bin_idx, d, intensity in selected_peaks:
         x_local = 0.0
         y_local = d * dir_y
         z_local = d * dir_z
         
-        # Apply center-back mounting offset
         x_robot = x_local + global_settings["offset_x"]
         y_robot = y_local
         z_robot = z_local
         
-        # Robot Frame -> Global Map Frame
         P_robot = np.array([x_robot, y_robot, z_robot])
         P_global = R_pose @ P_robot + t_pose
         
-        # Get exact timestamp for measurement
         timestamp_str = time.strftime("%Y-%m-%dT%H:%M:%S") + f".{int(time.time()*1000)%1000:03d}"
         points_to_send.append({
             "timestamp": timestamp_str,
@@ -530,7 +592,7 @@ def process_sonar_line(response, R_pose, t_pose, angle_gradian):
         
     # Diagnostic logging
     if points_to_send and angle_gradian % 20 == 0:
-        print(f"[Engine] Angle {angle_gradian}: Generated {len(points_to_send)} points (Robot X: {t_pose[0]:.2f})", flush=True)
+        print(f"[Engine] Angle {angle_gradian}: Generated {len(points_to_send)} clean surface points (Robot X: {t_pose[0]:.2f})", flush=True)
         
     return points_to_send
 
@@ -673,6 +735,7 @@ async def run_sonar_engine():
 
 
 async def main(args):
+    load_saved_settings()
     global_settings["emulate"] = args.emulate
     global_settings["offset_x"] = args.offset_x
     global_settings["intensity_threshold"] = args.intensity_threshold

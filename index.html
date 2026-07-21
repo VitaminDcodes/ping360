@@ -120,6 +120,26 @@
             box-shadow: 0 1px 3px rgba(0,0,0,0.2);
         }
 
+        input[type="number"].num-input {
+            width: 52px;
+            padding: 2px 4px;
+            border: 1px solid #cbd5e0;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 0.8rem;
+            font-weight: 600;
+            color: #2d3748;
+            text-align: center;
+            outline: none;
+            background: #ffffff;
+            transition: all 0.15s ease;
+        }
+
+        input[type="number"].num-input:focus {
+            border-color: #3182ce;
+            box-shadow: 0 0 0 2px rgba(49, 130, 206, 0.2);
+        }
+
         .btn {
             background: #ffffff;
             border: 1px solid #cbd5e0;
@@ -231,12 +251,17 @@
             <div class="bar-item">
                 <span class="bar-label">Threshold:</span>
                 <input type="range" id="threshold-slider" min="10" max="230" value="110">
-                <span id="threshold-val" style="font-family: monospace;">110</span>
+                <input type="number" id="threshold-input" class="num-input" min="10" max="230" value="110">
             </div>
             <div class="bar-item" id="speed-control-item">
                 <span class="bar-label">Speed:</span>
                 <input type="range" id="speed-slider" min="0.0" max="1.0" step="0.02" value="0.20">
-                <span id="speed-val" style="font-family: monospace;">0.20</span>
+                <input type="number" id="speed-input" class="num-input" min="0.0" max="1.0" step="0.01" value="0.20" style="width: 56px;">
+            </div>
+            <div class="bar-item">
+                <span class="bar-label">Min Range:</span>
+                <input type="number" id="min-range-input" class="num-input" min="0.05" max="2.0" step="0.05" value="0.25" style="width: 56px;" title="Minimum range cutoff to blank out ROV chassis and near-field noise">
+                <span style="font-size: 0.78rem; font-weight: bold; color: #4a5568;">m</span>
             </div>
             <div class="bar-item">
                 <span class="bar-label">Scan Step:</span>
@@ -251,6 +276,24 @@
                     <option value="20">20g (Coarse)</option>
                 </select>
             </div>
+        </div>
+
+        <div class="bar-group">
+            <div class="bar-item">
+                <span class="bar-label">IMU Yaw Offset:</span>
+                <input type="range" id="imu-yaw-slider" min="0" max="360" step="1" value="270">
+                <input type="number" id="imu-yaw-input" class="num-input" min="0" max="360" step="1" value="270">
+                <span style="font-size: 0.78rem; font-weight: bold; color: #4a5568;">°</span>
+            </div>
+            <div class="bar-item">
+                <span class="bar-label">Sonar Offset:</span>
+                <input type="range" id="sonar-offset-slider" min="0" max="360" step="1" value="0">
+                <input type="number" id="sonar-offset-input" class="num-input" min="0" max="360" step="1" value="0">
+                <span style="font-size: 0.78rem; font-weight: bold; color: #4a5568;">°</span>
+            </div>
+            <button id="set-default-btn" class="btn primary" style="font-weight: 600;" title="Save current orientation offsets as default for future sessions">Set Default</button>
+            <button id="reset-default-btn" class="btn" style="font-size: 0.72rem; padding: 2px 6px;" title="Reset orientation offsets to factory defaults (270° Yaw / 0° Sonar)">Reset</button>
+            <span id="default-saved-msg" style="font-size: 0.75rem; color: #38a169; font-weight: bold; display: none;">Saved!</span>
         </div>
 
         <div class="bar-group">
@@ -310,9 +353,10 @@
     <script>
         // DOM Elements
         const thresholdSlider = document.getElementById('threshold-slider');
-        const thresholdVal = document.getElementById('threshold-val');
+        const thresholdInput = document.getElementById('threshold-input');
         const speedSlider = document.getElementById('speed-slider');
-        const speedVal = document.getElementById('speed-val');
+        const speedInput = document.getElementById('speed-input');
+        const minRangeInput = document.getElementById('min-range-input');
         const gridToggle = document.getElementById('grid-toggle');
         const pointsCount = document.getElementById('points-count');
         const clearBtn = document.getElementById('clear-btn');
@@ -322,6 +366,13 @@
         const exportPlyMeshBtn = document.getElementById('export-ply-mesh-btn');
         const modelModeSelect = document.getElementById('model-mode-select');
         const scanStepSelect = document.getElementById('scan-step-select');
+        const imuYawSlider = document.getElementById('imu-yaw-slider');
+        const imuYawInput = document.getElementById('imu-yaw-input');
+        const sonarOffsetSlider = document.getElementById('sonar-offset-slider');
+        const sonarOffsetInput = document.getElementById('sonar-offset-input');
+        const setDefaultBtn = document.getElementById('set-default-btn');
+        const resetDefaultBtn = document.getElementById('reset-default-btn');
+        const defaultSavedMsg = document.getElementById('default-saved-msg');
         
         // Status dots
         const statusDot = document.getElementById('status-dot');
@@ -691,6 +742,35 @@
 
         connectWS();
 
+        // Load saved default values from localStorage on startup
+        function loadSavedDefaults() {
+            const savedImuYaw = localStorage.getItem('pv_imu_yaw_offset_deg');
+            if (savedImuYaw !== null) {
+                imuYawSlider.value = savedImuYaw;
+                imuYawInput.value = savedImuYaw;
+            }
+            const savedSonarOffset = localStorage.getItem('pv_sonar_angle_offset');
+            if (savedSonarOffset !== null) {
+                sonarOffsetSlider.value = savedSonarOffset;
+                sonarOffsetInput.value = savedSonarOffset;
+            }
+            const savedThreshold = localStorage.getItem('pv_intensity_threshold');
+            if (savedThreshold !== null) {
+                thresholdSlider.value = savedThreshold;
+                thresholdInput.value = savedThreshold;
+            }
+            const savedSpeed = localStorage.getItem('pv_speed');
+            if (savedSpeed !== null) {
+                speedSlider.value = savedSpeed;
+                speedInput.value = savedSpeed;
+            }
+            const savedMinRange = localStorage.getItem('pv_min_range_m');
+            if (savedMinRange !== null) {
+                minRangeInput.value = savedMinRange;
+            }
+        }
+        loadSavedDefaults();
+
         // Control Deck Handlers
         function syncSettings() {
             if (ws && ws.readyState === WebSocket.OPEN) {
@@ -698,7 +778,10 @@
                     action: "update_settings",
                     intensity_threshold: parseInt(thresholdSlider.value),
                     speed: parseFloat(speedSlider.value),
+                    min_range_m: parseFloat(minRangeInput.value) || 0.25,
                     angle_step: parseInt(scanStepSelect.value),
+                    imu_yaw_offset_deg: parseFloat(imuYawSlider.value),
+                    sonar_angle_offset: parseFloat(sonarOffsetSlider.value),
                     test_imu_fail: testImuFail.checked,
                     test_dvl_fail: testDvlFail.checked,
                     test_inject_drift: testInjectDrift.checked
@@ -706,17 +789,111 @@
             }
         }
 
+        // Slider & Input Event Listeners for Live Typing & Dragging
         thresholdSlider.addEventListener('input', () => {
-            thresholdVal.innerText = thresholdSlider.value;
+            thresholdInput.value = thresholdSlider.value;
             syncSettings();
+        });
+        thresholdInput.addEventListener('input', () => {
+            let val = parseFloat(thresholdInput.value);
+            if (!isNaN(val)) {
+                thresholdSlider.value = Math.max(10, Math.min(230, val));
+                syncSettings();
+            }
         });
 
         speedSlider.addEventListener('input', () => {
-            speedVal.innerText = speedSlider.value;
+            speedInput.value = speedSlider.value;
             syncSettings();
+        });
+        speedInput.addEventListener('input', () => {
+            let val = parseFloat(speedInput.value);
+            if (!isNaN(val)) {
+                speedSlider.value = Math.max(0, Math.min(1, val));
+                syncSettings();
+            }
         });
 
         scanStepSelect.addEventListener('change', () => {
+            syncSettings();
+        });
+
+        imuYawSlider.addEventListener('input', () => {
+            imuYawInput.value = imuYawSlider.value;
+            syncSettings();
+        });
+        imuYawInput.addEventListener('input', () => {
+            let val = parseFloat(imuYawInput.value);
+            if (!isNaN(val)) {
+                imuYawSlider.value = Math.max(0, Math.min(360, val));
+                syncSettings();
+            }
+        });
+
+        sonarOffsetSlider.addEventListener('input', () => {
+            sonarOffsetInput.value = sonarOffsetSlider.value;
+            syncSettings();
+        });
+        sonarOffsetInput.addEventListener('input', () => {
+            let val = parseFloat(sonarOffsetInput.value);
+            if (!isNaN(val)) {
+                sonarOffsetSlider.value = Math.max(0, Math.min(360, val));
+                syncSettings();
+            }
+        });
+
+        minRangeInput.addEventListener('input', () => {
+            syncSettings();
+        });
+
+        // Set Default & Reset Buttons Handlers
+        setDefaultBtn.addEventListener('click', () => {
+            const imuYaw = imuYawSlider.value;
+            const sonarOffset = sonarOffsetSlider.value;
+            const threshold = thresholdSlider.value;
+            const speed = speedSlider.value;
+            const minRange = minRangeInput.value;
+
+            localStorage.setItem('pv_imu_yaw_offset_deg', imuYaw);
+            localStorage.setItem('pv_sonar_angle_offset', sonarOffset);
+            localStorage.setItem('pv_intensity_threshold', threshold);
+            localStorage.setItem('pv_speed', speed);
+            localStorage.setItem('pv_min_range_m', minRange);
+
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    action: "save_default_settings",
+                    intensity_threshold: parseInt(threshold),
+                    speed: parseFloat(speed),
+                    min_range_m: parseFloat(minRange),
+                    imu_yaw_offset_deg: parseFloat(imuYaw),
+                    sonar_angle_offset: parseFloat(sonarOffset)
+                }));
+            }
+
+            defaultSavedMsg.style.display = 'inline';
+            setTimeout(() => {
+                defaultSavedMsg.style.display = 'none';
+            }, 2000);
+        });
+
+        resetDefaultBtn.addEventListener('click', () => {
+            localStorage.removeItem('pv_imu_yaw_offset_deg');
+            localStorage.removeItem('pv_sonar_angle_offset');
+            localStorage.removeItem('pv_intensity_threshold');
+            localStorage.removeItem('pv_speed');
+            localStorage.removeItem('pv_min_range_m');
+
+            imuYawSlider.value = 270;
+            imuYawInput.value = 270;
+            sonarOffsetSlider.value = 0;
+            sonarOffsetInput.value = 0;
+            thresholdSlider.value = 110;
+            thresholdInput.value = 110;
+            speedSlider.value = 0.20;
+            speedInput.value = 0.20;
+            minRangeInput.value = 0.25;
+
             syncSettings();
         });
 
