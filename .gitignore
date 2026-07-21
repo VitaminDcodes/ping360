@@ -40,3 +40,4 @@ pingviewer.rc.in
 .idea/
 .DS_Store
 Thumbs.db
+settings.json
